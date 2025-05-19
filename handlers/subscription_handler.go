@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -8,15 +9,8 @@ import (
 	"strings"
 	"time"
 	"weather-subscription/models"
+	"weather-subscription/storage"
 )
-
-// temporary save subs here
-// key: email, value: subscription
-var activeSubscriptions = make(map[string]models.Subscription)
-
-// temporary save unconfirmed subs with tokens
-// key: token, value: email (of user)
-var pendingConfirmations = make(map[string]models.Subscription)
 
 func SubscribeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -25,10 +19,9 @@ func SubscribeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var subRequest models.Subscription
-
 	contentType := r.Header.Get("Content-Type")
-	if !strings.Contains(contentType, "applications/json") {
-		log.Printf("Received Content-Type: %s. Assuming JSON for now", contentType)
+	if !strings.Contains(contentType, "application/json") {
+		log.Printf("Received Content-Type: %s. Assuming JSON for now.", contentType)
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -37,8 +30,7 @@ func SubscribeHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	// some basic validation
+	defer r.Body.Close()
 
 	if subRequest.Email == "" || subRequest.City == "" || subRequest.Frequency == "" {
 		http.Error(w, "Invalid input: email, city, and frequency are required", http.StatusBadRequest)
@@ -48,12 +40,6 @@ func SubscribeHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid input: frequency must be 'hourly' or 'daily'", http.StatusBadRequest)
 		return
 	}
-	if _, exists := activeSubscriptions[subRequest.Email]; exists {
-		log.Printf("Email %s already subscribed and confirmed", subRequest.Email)
-		http.Error(w, "Email already subscribed", http.StatusConflict)
-		return
-	}
-
 	newSubscription := models.Subscription{
 		Email:     subRequest.Email,
 		City:      subRequest.City,
@@ -61,25 +47,29 @@ func SubscribeHandler(w http.ResponseWriter, r *http.Request) {
 		Confirmed: false,
 	}
 
-	// token generation
+	confirmationToken := fmt.Sprintf("%s-%d", strings.ReplaceAll(subRequest.Email, "@", "-at-"), time.Now().UnixNano())
 
-	token := fmt.Sprintf("%s-%d", strings.ReplaceAll(subRequest.Email, "@", "-at-"), time.Now().UnixNano())
+	err := storage.StorePendingSubscription(newSubscription, confirmationToken)
+	if err != nil {
+		if strings.Contains(err.Error(), "email already subscribed and confirmed") {
+			log.Printf("Attempt to subscribe already confirmed email: %s", newSubscription.Email)
+			http.Error(w, "Email already subscribed and confirmed", http.StatusConflict) // 409
+		} else {
+			log.Printf("Error storing pending subscription for %s: %v", newSubscription.Email, err)
+			http.Error(w, "Failed to process subscription", http.StatusInternalServerError)
+		}
+		return
+	}
 
-	pendingConfirmations[token] = newSubscription
+	log.Printf("Pending subscription stored for %s with token %s.", newSubscription.Email, confirmationToken)
 
-	// response for client
-	log.Printf("Subscription pending for %s with token %s. Details: %+v", newSubscription.Email, token, newSubscription)
-
-	confirmationLink := fmt.Sprintf("http://localhost:%s/confirm/%s", "8080", token)
+	confirmationLink := fmt.Sprintf("http://localhost:%s/confirm/%s", "8080", confirmationToken)
 	log.Printf("SIMULATING SENDING EMAIL to %s: Please confirm your subscription by visiting %s", newSubscription.Email, confirmationLink)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	responseMessage := map[string]string{"message": "Subscription successful. Confirmation email sent."}
 	json.NewEncoder(w).Encode(responseMessage)
-
-	log.Printf("Current pending confirmations: %+v", pendingConfirmations)
-	log.Printf("Current active subscriptions: %+v", activeSubscriptions)
 }
 
 func ConfirmSubscriptionHandler(w http.ResponseWriter, r *http.Request) {
@@ -87,48 +77,74 @@ func ConfirmSubscriptionHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Only GET method is allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
-	// get token from path
-
 	pathParts := strings.Split(strings.TrimPrefix(r.URL.Path, "/confirm/"), "/")
 	if len(pathParts) == 0 || pathParts[0] == "" {
 		http.Error(w, "Invalid token: token is missing in path", http.StatusBadRequest)
 		return
 	}
-
 	token := pathParts[0]
 	log.Printf("Received confirmation request for token: %s", token)
 
-	subscriptionToConfirm, found := pendingConfirmations[token]
-	if !found {
-		log.Printf("Token not found or already used: %s", token)
-		http.Error(w, "Token not found or invalid", http.StatusNotFound)
+	pendingSub, err := storage.FindPendingSubscriptionByToken(token)
+	if err != nil || pendingSub == nil {
+		log.Printf("Error finding pending subscription by token %s: %v", token, err)
+		http.Error(w, "Token not found, invalid, or subscription already confirmed", http.StatusNotFound) // 404
 		return
 	}
 
-	if sub, isActive := activeSubscriptions[subscriptionToConfirm.Email]; isActive && sub.Confirmed {
-		log.Printf("Subscription for %s already confirmed.", subscriptionToConfirm.Email)
+	activeSub, err := storage.FindActiveSubscriptionByEmail(pendingSub.Email)
+	if err != nil && err != sql.ErrNoRows {
+		log.Printf("Database error checking active subscription for %s: %v", pendingSub.Email, err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if activeSub != nil && activeSub.Confirmed {
+		log.Printf("Subscription for %s already confirmed.", pendingSub.Email)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		responseMessage := map[string]string{"message": "Subscription is ralready confirmed"}
+		responseMessage := map[string]string{"message": "Subscription is already confirmed"}
 		json.NewEncoder(w).Encode(responseMessage)
-		delete(pendingConfirmations, token)
 		return
 	}
 
-	subscriptionToConfirm.Confirmed = true
+	unsubscribeToken, err := storage.ConfirmSubscriptionByEmailAndToken(pendingSub.Email, token)
+	if err != nil {
+		log.Printf("Error confirming subscription for email %s with token %s: %v", pendingSub.Email, token, err)
+		http.Error(w, "Failed to confirm subscription. Token may be invalid or already used.", http.StatusBadRequest)
+		return
+	}
 
-	activeSubscriptions[subscriptionToConfirm.Email] = subscriptionToConfirm
-
-	delete(pendingConfirmations, token)
-
-	log.Printf("Subscription confirmed for email: %s. Details: %+v", subscriptionToConfirm.Email, subscriptionToConfirm)
-	log.Printf("Current pending confirmations: %+v", pendingConfirmations)
-	log.Printf("Current active subscriptions: %+v", activeSubscriptions)
+	log.Printf("Subscription confirmed for email: %s. Unsubscribe token: %s", pendingSub.Email, unsubscribeToken)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	responseMessage := map[string]string{"message": "Subscription confirmed successfully"}
 	json.NewEncoder(w).Encode(responseMessage)
+}
 
+func UnsubscribeHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Only GET method is allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	pathParts := strings.Split(strings.TrimPrefix(r.URL.Path, "/unsubscribe/"), "/")
+	if len(pathParts) == 0 || pathParts[0] == "" {
+		http.Error(w, "Invalid unsubscribe token: token is missing in path", http.StatusBadRequest)
+		return
+	}
+	unsubscribeToken := pathParts[0]
+	log.Printf("Received unsubscribe request for token: %s", unsubscribeToken)
+
+	err := storage.DeleteSubscriptionByUnsubscribeToken(unsubscribeToken)
+	if err != nil {
+		log.Printf("Error unsubscribing with token %s: %v", unsubscribeToken, err)
+		http.Error(w, "Failed to unsubscribe. Token may be invalid or subscription not found.", http.StatusNotFound)
+		return
+	}
+
+	log.Printf("Successfully unsubscribed using token: %s", unsubscribeToken)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	responseMessage := map[string]string{"message": "Unsubscribed successfully"}
+	json.NewEncoder(w).Encode(responseMessage)
 }

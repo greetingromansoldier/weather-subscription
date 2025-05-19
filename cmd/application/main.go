@@ -1,10 +1,10 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"net/http"
 	"weather-subscription/handlers"
+	"weather-subscription/storage"
 
 	"github.com/joho/godotenv"
 )
@@ -13,15 +13,22 @@ func main() {
 	//env for api key
 	err := godotenv.Load()
 	if err != nil {
-		log.Println("Error loading .env file. Make sure it exists in case of running locally")
+		log.Println("Error loading .env file.")
 	}
 
-	fmt.Println("Hello world!")
+	// database init
+	if err := storage.InitDB(); err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
+	if storage.DB != nil {
+		defer storage.DB.Close()
+	}
 
 	//routing
 	http.HandleFunc("/weather", handlers.WeatherHandler)
 	http.HandleFunc("/subscribe", handlers.SubscribeHandler)
 	http.HandleFunc("/confirm/", handlers.ConfirmSubscriptionHandler)
+	http.HandleFunc("/unsubscribe/", handlers.UnsubscribeHandler)
 
 	//server
 	port := "8080"
