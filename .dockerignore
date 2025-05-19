@@ -1,0 +1,9 @@
+.git
+.gitignore
+.vscode/
+*.md
+bin/
+subscriptions.db 
+*.log
+
+.env

@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
-	"os"
+	// "os"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -17,7 +17,7 @@ const dbFileName = "subscriptions.db"
 
 func InitDB() error {
 	var err error
-	_ = os.Remove(dbFileName)
+	// _ = os.Remove(dbFileName)
 
 	DB, err = sql.Open("sqlite3", "./"+dbFileName)
 	if err != nil {

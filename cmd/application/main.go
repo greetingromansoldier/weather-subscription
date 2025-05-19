@@ -3,20 +3,17 @@ package main
 import (
 	"log"
 	"net/http"
+	"os"
 	"weather-subscription/handlers"
 	"weather-subscription/storage"
-
-	"github.com/joho/godotenv"
 )
 
 func main() {
-	//env for api key
-	err := godotenv.Load()
-	if err != nil {
-		log.Println("Error loading .env file.")
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080" // дефолтний порт
 	}
 
-	// database init
 	if err := storage.InitDB(); err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
@@ -24,20 +21,16 @@ func main() {
 		defer storage.DB.Close()
 	}
 
-	//routing
 	http.HandleFunc("/weather", handlers.WeatherHandler)
 	http.HandleFunc("/subscribe", handlers.SubscribeHandler)
 	http.HandleFunc("/confirm/", handlers.ConfirmSubscriptionHandler)
 	http.HandleFunc("/unsubscribe/", handlers.UnsubscribeHandler)
 
-	//server
-	port := "8080"
-	log.Printf("Server is started. The port is %s...", port)
-	log.Printf("Available endpoints: ")
+	log.Printf("Server started on port %s", port)
+	log.Printf("Available endpoints:")
 	log.Printf(" GET http://localhost:%s/weather?city=CITY_NAME", port)
 
-	serverErr := http.ListenAndServe(":"+port, nil)
-	if serverErr != nil {
-		log.Fatal("error occured when launching server: ", serverErr)
+	if err := http.ListenAndServe(":"+port, nil); err != nil {
+		log.Fatalf("Error occurred when launching server: %v", err)
 	}
 }
