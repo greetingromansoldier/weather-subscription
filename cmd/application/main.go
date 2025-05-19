@@ -21,6 +21,7 @@ func main() {
 	//routing
 	http.HandleFunc("/weather", handlers.WeatherHandler)
 	http.HandleFunc("/subscribe", handlers.SubscribeHandler)
+	http.HandleFunc("/confirm/", handlers.ConfirmSubscriptionHandler)
 
 	//server
 	port := "8080"

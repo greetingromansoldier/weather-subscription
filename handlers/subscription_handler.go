@@ -16,7 +16,7 @@ var activeSubscriptions = make(map[string]models.Subscription)
 
 // temporary save unconfirmed subs with tokens
 // key: token, value: email (of user)
-var pendingConfirmations = make(map[string]string)
+var pendingConfirmations = make(map[string]models.Subscription)
 
 func SubscribeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -65,18 +65,70 @@ func SubscribeHandler(w http.ResponseWriter, r *http.Request) {
 
 	token := fmt.Sprintf("%s-%d", strings.ReplaceAll(subRequest.Email, "@", "-at-"), time.Now().UnixNano())
 
-	pendingConfirmations[token] = newSubscription.Email
-	log.Printf("Subscription pending for %s with token %s", newSubscription.Email, token)
+	pendingConfirmations[token] = newSubscription
 
-	confirmationLink := fmt.Sprintf("http://localhost:%s/confrim/%s", "8080", token)
-	log.Printf("==SENDNIG EMAI SIMULATION== to %s: confirm your subscrioption visiting %s", newSubscription.Email, confirmationLink)
+	// response for client
+	log.Printf("Subscription pending for %s with token %s. Details: %+v", newSubscription.Email, token, newSubscription)
+
+	confirmationLink := fmt.Sprintf("http://localhost:%s/confirm/%s", "8080", token)
+	log.Printf("SIMULATING SENDING EMAIL to %s: Please confirm your subscription by visiting %s", newSubscription.Email, confirmationLink)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	responseMessage := map[string]string{"message": "Subscription successful. Confirmation email sent"}
+	responseMessage := map[string]string{"message": "Subscription successful. Confirmation email sent."}
 	json.NewEncoder(w).Encode(responseMessage)
 
 	log.Printf("Current pending confirmations: %+v", pendingConfirmations)
 	log.Printf("Current active subscriptions: %+v", activeSubscriptions)
+}
+
+func ConfirmSubscriptionHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Only GET method is allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// get token from path
+
+	pathParts := strings.Split(strings.TrimPrefix(r.URL.Path, "/confirm/"), "/")
+	if len(pathParts) == 0 || pathParts[0] == "" {
+		http.Error(w, "Invalid token: token is missing in path", http.StatusBadRequest)
+		return
+	}
+
+	token := pathParts[0]
+	log.Printf("Received confirmation request for token: %s", token)
+
+	subscriptionToConfirm, found := pendingConfirmations[token]
+	if !found {
+		log.Printf("Token not found or already used: %s", token)
+		http.Error(w, "Token not found or invalid", http.StatusNotFound)
+		return
+	}
+
+	if sub, isActive := activeSubscriptions[subscriptionToConfirm.Email]; isActive && sub.Confirmed {
+		log.Printf("Subscription for %s already confirmed.", subscriptionToConfirm.Email)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		responseMessage := map[string]string{"message": "Subscription is ralready confirmed"}
+		json.NewEncoder(w).Encode(responseMessage)
+		delete(pendingConfirmations, token)
+		return
+	}
+
+	subscriptionToConfirm.Confirmed = true
+
+	activeSubscriptions[subscriptionToConfirm.Email] = subscriptionToConfirm
+
+	delete(pendingConfirmations, token)
+
+	log.Printf("Subscription confirmed for email: %s. Details: %+v", subscriptionToConfirm.Email, subscriptionToConfirm)
+	log.Printf("Current pending confirmations: %+v", pendingConfirmations)
+	log.Printf("Current active subscriptions: %+v", activeSubscriptions)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	responseMessage := map[string]string{"message": "Subscription confirmed successfully"}
+	json.NewEncoder(w).Encode(responseMessage)
 
 }
