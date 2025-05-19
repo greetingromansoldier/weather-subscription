@@ -1,1 +1,3 @@
 cmd/weather-subscription/bin/
+
+.env
