@@ -9,8 +9,8 @@ const (
 )
 
 type Subscription struct {
-	email     string        `json:"email"`
-	city      string        `json:"city"`
-	frequency FrequencyType `json:"frequency"`
-	confirmed bool          `json:"confirmed"`
+	Email     string        `json:"email"`
+	City      string        `json:"city"`
+	Frequency FrequencyType `json:"frequency" validate:"required,oneof=hourly daily"`
+	Confirmed bool          `json:"confirmed"`
 }
