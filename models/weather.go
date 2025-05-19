@@ -1,7 +1,7 @@
 package models
 
 type Weather struct {
-	temperature float64 `json:"temperature"`
-	humidity    float64 `json:"humidity"`
-	description string  `json:"description"`
+	Temperature float64 `json:"temperature"`
+	Humidity    float64 `json:"humidity"`
+	Description string  `json:"description"`
 }
